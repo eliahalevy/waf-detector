@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Am I Safe? — WAF Detector</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── RESET & VARS ────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --blue:        #5b6ef5;
+  --blue-mid:    #4f62e8;
+  --blue-dark:   #3d4fd4;
+  --blue-bg:     #5563f0;
+  --orange:      #f4714a;
+  --orange-h:    #e8603a;
+  --white:       #ffffff;
+  --w70:         rgba(255,255,255,0.70);
+  --w50:         rgba(255,255,255,0.50);
+  --w30:         rgba(255,255,255,0.30);
+  --w15:         rgba(255,255,255,0.15);
+  --w08:         rgba(255,255,255,0.08);
+  --green:       #2ecc71;
+  --red:         #e74c3c;
+  --yellow:      #f1c40f;
+  --font:        'DM Sans', sans-serif;
+  --mono:        'DM Mono', monospace;
+}
+
+html, body {
+  min-height: 100vh;
+  font-family: var(--font);
+  background: var(--blue-bg);
+  color: var(--white);
+  background-image:
+    radial-gradient(ellipse 100% 60% at 50% -10%, rgba(255,255,255,0.10) 0%, transparent 65%),
+    radial-gradient(ellipse 50% 50% at 85% 90%,  rgba(61,79,212,0.50)   0%, transparent 60%),
+    radial-gradient(ellipse 40% 40% at 10% 80%,  rgba(91,110,245,0.30)  0%, transparent 60%);
+}
+
+/* ── PAGE SHELL ─────────────────────────────────────────────── */
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px 80px;
+}
+
+/* ── HEADER ─────────────────────────────────────────────────── */
+.header {
+  text-align: center;
+  margin-bottom: 44px;
+  animation: fadeUp 0.6s ease both;
+}
+
+.eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--w70);
+  margin-bottom: 18px;
+}
+
+.header h1 {
+  font-size: clamp(52px, 11vw, 92px);
+  font-weight: 900;
+  letter-spacing: -3px;
+  line-height: 1.0;
+  margin-bottom: 18px;
+  color: var(--white);
+  text-shadow: 0 4px 40px rgba(0,0,0,0.18);
+}
+
+.header p {
+  font-size: clamp(15px, 2.2vw, 18px);
+  color: var(--w70);
+  font-weight: 400;
+  line-height: 1.65;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+/* ── CARD ────────────────────────────────────────────────────── */
+.card {
+  width: 100%;
+  max-width: 660px;
+  background: rgba(255,255,255,0.13);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 22px;
+  padding: 40px 40px 36px;
+  box-shadow:
+    0 24px 64px rgba(0,0,0,0.18),
+    0 1px 0 rgba(255,255,255,0.22) inset;
+  animation: fadeUp 0.6s 0.1s ease both;
+}
+
+/* ── STEPS ───────────────────────────────────────────────────── */
+.steps {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 36px;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  width: 80px;
+}
+
+.step-circle {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  transition: all 0.4s ease;
+  flex-shrink: 0;
+}
+
+.step.done .step-circle {
+  background: var(--white);
+  color: var(--blue-bg);
+  box-shadow: 0 0 0 4px rgba(255,255,255,0.22);
+}
+.step.active .step-circle {
+  background: var(--white);
+  color: var(--blue-bg);
+  box-shadow: 0 0 0 4px rgba(255,255,255,0.22);
+}
+.step.inactive .step-circle {
+  background: var(--w08);
+  color: var(--w30);
+  border: 1.5px solid var(--w30);
+}
+
+.step-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 1.3;
+  width: 80px;
+}
+.step.done   .step-label,
+.step.active .step-label  { color: var(--white); }
+.step.inactive .step-label { color: var(--w30); }
+
+.step-connector {
+  flex: 1;
+  height: 2px;
+  margin-top: 19px;
+  border-radius: 2px;
+  transition: background 0.4s ease;
+}
+.step-connector.done   { background: rgba(255,255,255,0.5); }
+.step-connector.inactive { background: var(--w15); }
+
+/* ── INPUT AREA ──────────────────────────────────────────────── */
+.input-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--w70);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.domain-input {
+  width: 100%;
+  background: rgba(255,255,255,0.96);
+  border: 2.5px solid transparent;
+  border-radius: 14px;
+  color: #1c2340;
+  font-family: var(--font);
+  font-size: 18px;
+  font-weight: 500;
+  padding: 18px 22px;
+  outline: none;
+  transition: border-color 0.25s, box-shadow 0.25s;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+  margin-bottom: 12px;
+}
+.domain-input:focus {
+  border-color: var(--orange);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.10), 0 0 0 5px rgba(244,113,74,0.18);
+}
+.domain-input::placeholder { color: #9fa8c7; font-weight: 400; }
+.domain-input:disabled { opacity: 0.6; }
+
+.btn-scan {
+  width: 100%;
+  background: var(--orange);
+  color: var(--white);
+  border: none;
+  border-radius: 50px;
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  padding: 18px 32px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  box-shadow: 0 6px 24px rgba(244,113,74,0.38), 0 1px 0 rgba(255,255,255,0.18) inset;
+}
+.btn-scan:hover:not(:disabled) {
+  background: var(--orange-h);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 32px rgba(244,113,74,0.48);
+}
+.btn-scan:active:not(:disabled) { transform: translateY(0); }
+.btn-scan:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.scan-note {
+  text-align: center;
+  font-size: 11px;
+  color: var(--w30);
+  margin-top: 12px;
+  letter-spacing: 0.3px;
+}
+
+/* ── SCANNING STATE ──────────────────────────────────────────── */
+.scanning-state {
+  display: none;
+  margin-top: 24px;
+  padding: 20px 22px;
+  background: rgba(0,0,0,0.15);
+  border-radius: 12px;
+  border: 1px solid var(--w15);
+}
+
+.scan-steps-list { list-style: none; }
+.scan-step-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 13px;
+  color: var(--w50);
+  font-weight: 500;
+  transition: color 0.3s;
+}
+.scan-step-item.done   { color: var(--w70); }
+.scan-step-item.active { color: var(--white); }
+
+.scan-step-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.progress-bar {
+  margin-top: 16px;
+  height: 3px;
+  background: var(--w15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(255,255,255,0.5), var(--white));
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+/* ── RESULTS STATE ───────────────────────────────────────────── */
+.results-state {
+  display: none;
+  margin-top: 24px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--w15);
+}
+
+.results-header {
+  padding: 16px 22px;
+  background: rgba(0,0,0,0.2);
+  border-bottom: 1px solid var(--w15);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.results-domain {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--w70);
+}
+
+.waf-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+}
+.status-dot.protected { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse-dot 2s infinite; }
+.status-dot.unprotected { background: var(--red); box-shadow: 0 0 8px var(--red); }
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+.badge-protected   { color: #5fffaa; }
+.badge-unprotected { color: #ff7a7a; }
+
+.results-body { padding: 20px 22px; background: rgba(0,0,0,0.10); }
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--w08);
+  font-size: 13px;
+}
+.result-row:last-child { border-bottom: none; }
+.result-key { color: var(--w50); font-weight: 500; letter-spacing: 0.5px; font-size: 11px; text-transform: uppercase; }
+.result-val { font-weight: 600; font-family: var(--mono); font-size: 13px; }
+.val-green  { color: #5fffaa; }
+.val-red    { color: #ff7a7a; }
+.val-yellow { color: #ffd166; }
+.val-white  { color: var(--white); }
+.val-muted  { color: var(--w50); }
+
+.confidence-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--w15);
+}
+.conf-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.conf-label-text { font-size: 11px; color: var(--w50); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.conf-value { font-size: 12px; font-weight: 700; color: var(--white); font-family: var(--mono); }
+.conf-track { height: 4px; background: var(--w15); border-radius: 4px; overflow: hidden; }
+.conf-fill  { height: 100%; border-radius: 4px; background: linear-gradient(90deg, rgba(255,255,255,0.4), var(--white)); transition: width 0.8s ease; }
+
+.signals-wrap {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.signal-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: var(--w70);
+  letter-spacing: 0.3px;
+}
+
+.scan-again-btn {
+  margin-top: 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--w50);
+  background: none;
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  display: block;
+  text-align: center;
+  width: 100%;
+  padding: 4px;
+  transition: color 0.2s;
+}
+.scan-again-btn:hover { color: var(--white); }
+
+/* ── DIVIDER ─────────────────────────────────────────────────── */
+.divider {
+  height: 1px;
+  background: var(--w15);
+  margin: 28px 0;
+}
+
+/* ── TRUST BADGES ────────────────────────────────────────────── */
+.trust {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.trust-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--w70);
+  font-weight: 500;
+}
+
+/* ── CONTEXTUAL MESSAGE ──────────────────────────────────────── */
+.context-msg {
+  display: none;
+  width: 100%;
+  max-width: 660px;
+  margin-top: 14px;
+  border-radius: 16px;
+  padding: 24px 32px;
+  animation: fadeUp 0.5s ease both;
+}
+.context-msg.protected {
+  background: rgba(46,204,113,0.10);
+  border: 1px solid rgba(46,204,113,0.25);
+  border-left: 4px solid var(--green);
+}
+.context-msg.unprotected {
+  background: rgba(231,76,60,0.10);
+  border: 1px solid rgba(231,76,60,0.25);
+  border-left: 4px solid var(--red);
+}
+.context-msg .msg-icon { font-size: 22px; margin-bottom: 10px; display: block; }
+.context-msg .msg-main {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--white);
+  line-height: 1.65;
+  margin-bottom: 12px;
+}
+.context-msg .msg-cta {
+  font-size: 14px;
+  color: var(--w70);
+  line-height: 1.6;
+  font-style: italic;
+}
+
+/* ── LEAD CARD ───────────────────────────────────────────────── */
+.lead-card {
+  display: none;
+  width: 100%;
+  max-width: 660px;
+  margin-top: 16px;
+  background: rgba(255,255,255,0.10);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.20);
+  border-radius: 22px;
+  padding: 36px 40px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.12);
+  animation: fadeUp 0.5s ease both;
+}
+
+.lead-heading {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--white);
+  margin-bottom: 6px;
+  letter-spacing: -0.3px;
+}
+.lead-sub {
+  font-size: 14px;
+  color: var(--w70);
+  margin-bottom: 24px;
+  line-height: 1.6;
+}
+.lead-sub strong { color: var(--white); font-weight: 700; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.form-input {
+  width: 100%;
+  background: rgba(255,255,255,0.92);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  color: #1c2340;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 13px 16px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.form-input:focus {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 4px rgba(244,113,74,0.15);
+}
+.form-input::placeholder { color: #9fa8c7; font-weight: 400; }
+
+.btn-submit {
+  width: 100%;
+  background: var(--orange);
+  color: var(--white);
+  border: none;
+  border-radius: 50px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 16px 32px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  box-shadow: 0 6px 24px rgba(244,113,74,0.35);
+}
+.btn-submit:hover {
+  background: var(--orange-h);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(244,113,74,0.45);
+}
+
+.lead-success {
+  display: none;
+  text-align: center;
+  padding: 20px 0 8px;
+}
+.lead-success .check { font-size: 40px; margin-bottom: 12px; }
+.lead-success h3 { font-size: 18px; font-weight: 800; margin-bottom: 6px; }
+.lead-success p { font-size: 14px; color: var(--w70); }
+
+/* ── FOOTER ──────────────────────────────────────────────────── */
+.footer {
+  margin-top: 36px;
+  font-size: 11px;
+  color: var(--w30);
+  letter-spacing: 1px;
+  text-align: center;
+  animation: fadeUp 0.6s 0.2s ease both;
+}
+
+/* ── ERROR MESSAGE ───────────────────────────────────────────── */
+.error-msg {
+  display: none;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(231,76,60,0.15);
+  border: 1px solid rgba(231,76,60,0.3);
+  border-radius: 10px;
+  font-size: 13px;
+  color: #ffaaaa;
+  font-weight: 500;
+}
+
+/* ── ANIMATIONS ──────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 13px; height: 13px;
+  border: 2px solid var(--w30);
+  border-top-color: var(--white);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+/* ── RESPONSIVE ──────────────────────────────────────────────── */
+@media (max-width: 520px) {
+  .card, .lead-card { padding: 28px 22px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .step { width: 64px; }
+  .step-label { width: 64px; font-size: 9px; }
+  .trust { gap: 14px; }
+}
+
+/* ── PASSWORD GATE ───────────────────────────────────────────── */
+.password-gate {
+  position: fixed;
+  inset: 0;
+  background: var(--blue-bg);
+  background-image:
+    radial-gradient(ellipse 100% 60% at 50% -10%, rgba(255,255,255,0.10) 0%, transparent 65%),
+    radial-gradient(ellipse 50% 50% at 85% 90%,  rgba(61,79,212,0.50)   0%, transparent 60%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.password-box {
+  width: 100%;
+  max-width: 420px;
+  background: rgba(255,255,255,0.13);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 22px;
+  padding: 44px 40px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.18);
+  text-align: center;
+  animation: fadeUp 0.5s ease both;
+}
+.password-box .lock-icon { font-size: 40px; margin-bottom: 16px; display: block; }
+.password-box h2 {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  margin-bottom: 8px;
+}
+.password-box p {
+  font-size: 13px;
+  color: var(--w70);
+  margin-bottom: 28px;
+  line-height: 1.6;
+}
+.password-input {
+  width: 100%;
+  background: rgba(255,255,255,0.96);
+  border: 2.5px solid transparent;
+  border-radius: 12px;
+  color: #1c2340;
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 500;
+  padding: 16px 20px;
+  outline: none;
+  text-align: center;
+  letter-spacing: 2px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+  margin-bottom: 12px;
+}
+.password-input:focus {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 5px rgba(244,113,74,0.18);
+}
+.password-input::placeholder { letter-spacing: 0; color: #9fa8c7; font-weight: 400; }
+.btn-unlock {
+  width: 100%;
+  background: var(--orange);
+  color: var(--white);
+  border: none;
+  border-radius: 50px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  padding: 16px 32px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  box-shadow: 0 6px 24px rgba(244,113,74,0.38);
+}
+.btn-unlock:hover { background: var(--orange-h); transform: translateY(-2px); }
+.btn-unlock:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.password-error {
+  display: none;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #ffaaaa;
+  font-weight: 600;
+}
+
+</style>
+</head>
+<body>
+
+<!-- PASSWORD GATE -->
+<div class="password-gate" id="password-gate">
+  <div class="password-box">
+    <span class="lock-icon">🔐</span>
+    <h2>Restricted Access</h2>
+    <p>This tool is for authorized use only.<br>Enter the access password to continue.</p>
+    <input
+      class="password-input"
+      id="password-input"
+      type="password"
+      placeholder="Enter password"
+      autocomplete="off"
+    >
+    <button class="btn-unlock" id="btn-unlock" onclick="submitPassword()">UNLOCK</button>
+    <div class="password-error" id="password-error">Incorrect password. Please try again.</div>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="eyebrow">Web Application Firewall Scanner</div>
+    <h1>AM I SAFE?</h1>
+    <p>Discover the gaps in your web protection and learn the right steps to close them before attackers do.</p>
+  </div>
+
+  <!-- MAIN CARD -->
+  <div class="card">
+
+    <!-- PROGRESS STEPS -->
+    <div class="steps" id="steps">
+      <div class="step active" id="step1">
+        <div class="step-circle">1</div>
+        <div class="step-label">Enter Domain</div>
+      </div>
+      <div class="step-connector inactive" id="conn1"></div>
+      <div class="step inactive" id="step2">
+        <div class="step-circle">2</div>
+        <div class="step-label">Security Analysis</div>
+      </div>
+      <div class="step-connector inactive" id="conn2"></div>
+      <div class="step inactive" id="step3">
+        <div class="step-circle">3</div>
+        <div class="step-label">Action Required</div>
+      </div>
+    </div>
+
+    <!-- INPUT STATE -->
+    <div id="input-state">
+      <div class="input-label">Your Domain or Subdomain</div>
+      <input
+        class="domain-input"
+        id="domain-input"
+        type="text"
+        placeholder="yourcompany.com or app.yourcompany.com"
+        autocomplete="off"
+        autocapitalize="none"
+        spellcheck="false"
+      >
+      <button class="btn-scan" id="scan-btn" onclick="startScan()">SCAN NOW</button>
+      <div class="scan-note">🔒 &nbsp;Read-only passive scan · No data stored</div>
+      <div class="error-msg" id="error-msg"></div>
+    </div>
+
+    <!-- SCANNING STATE -->
+    <div class="scanning-state" id="scanning-state">
+      <ul class="scan-steps-list" id="scan-steps-list">
+        <li class="scan-step-item inactive" id="ss1"><span class="scan-step-icon">·</span> Resolving domain &amp; checking headers</li>
+        <li class="scan-step-item inactive" id="ss2"><span class="scan-step-icon">·</span> Fingerprinting cookies</li>
+        <li class="scan-step-item inactive" id="ss3"><span class="scan-step-icon">·</span> Testing response codes with payloads</li>
+        <li class="scan-step-item inactive" id="ss4"><span class="scan-step-icon">·</span> Analyzing block page content</li>
+        <li class="scan-step-item inactive" id="ss5"><span class="scan-step-icon">·</span> Timing behavior analysis</li>
+      </ul>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    </div>
+
+    <!-- RESULTS STATE -->
+    <div class="results-state" id="results-state">
+      <div class="results-header">
+        <span class="results-domain" id="results-domain"></span>
+        <div class="waf-status-badge" id="waf-status-badge"></div>
+      </div>
+      <div class="results-body">
+        <div class="result-row">
+          <span class="result-key">WAF Status</span>
+          <span class="result-val" id="res-status"></span>
+        </div>
+        <div class="result-row" id="res-vendor-row">
+          <span class="result-key">Vendor</span>
+          <span class="result-val val-yellow" id="res-vendor"></span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">Scan Time</span>
+          <span class="result-val val-white" id="res-time"></span>
+        </div>
+
+        <div class="confidence-section" id="conf-section">
+          <div class="conf-row">
+            <span class="conf-label-text">Confidence Score</span>
+            <span class="conf-value" id="conf-value"></span>
+          </div>
+          <div class="conf-track"><div class="conf-fill" id="conf-fill"></div></div>
+        </div>
+
+        <div class="signals-wrap" id="signals-wrap"></div>
+      </div>
+    </div>
+
+    <button class="scan-again-btn" id="scan-again-btn" style="display:none" onclick="resetScan()">← Scan another domain</button>
+
+  </div><!-- /card -->
+
+
+  <!-- CONTEXTUAL MESSAGE -->
+  <div class="context-msg" id="context-msg">
+    <span class="msg-icon" id="msg-icon"></span>
+    <div class="msg-main" id="msg-main"></div>
+    <div class="msg-cta" id="msg-cta"></div>
+  </div>
+
+  <!-- LEAD CARD -->
+  <div class="lead-card" id="lead-card">
+    <div id="lead-form-content">
+      <div class="lead-heading">Get your full security action plan</div>
+      <div class="lead-sub">Our experts will review your scan results and walk you through <strong>exactly what needs to change</strong> to properly protect your assets.</div>
+      <div class="form-grid">
+        <input class="form-input" id="lead-name"    type="text" placeholder="Full name">
+        <input class="form-input" id="lead-email"   type="email" placeholder="Work email">
+        <input class="form-input" id="lead-company" type="text" placeholder="Company">
+        <input class="form-input" id="lead-phone"   type="tel"  placeholder="Phone (optional)">
+      </div>
+      <button class="btn-submit" onclick="submitLead()">→ &nbsp; Send Me the Action Plan</button>
+    </div>
+    <div class="lead-success" id="lead-success">
+      <div class="check">✅</div>
+      <h3>You're all set!</h3>
+      <p>We'll reach out shortly with your personalized security action plan.</p>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">WAF DETECTOR &nbsp;·&nbsp; POWERED BY ACTIVE SECURITY RECONNAISSANCE</div>
+
+</div><!-- /page -->
+
+<script>
+// ── STATE ────────────────────────────────────────────────────────
+let scanResult = null;
+
+// ── STEP HELPERS ─────────────────────────────────────────────────
+function setStep(n) {
+  [1,2,3].forEach(i => {
+    const el = document.getElementById('step' + i);
+    el.className = 'step ' + (i < n ? 'done' : i === n ? 'active' : 'inactive');
+  });
+  [1,2].forEach(i => {
+    const el = document.getElementById('conn' + i);
+    el.className = 'step-connector ' + (i < n ? 'done' : 'inactive');
+  });
+}
+
+// ── SCAN STEP ANIMATION ──────────────────────────────────────────
+const SCAN_STEPS = ['ss1','ss2','ss3','ss4','ss5'];
+const STEP_LABELS = [
+  ['Resolving domain &amp; checking headers', '✓'],
+  ['Fingerprinting cookies', '✓'],
+  ['Testing response codes with payloads', '✓'],
+  ['Analyzing block page content', '✓'],
+  ['Timing behavior analysis', '✓'],
+];
+const STEP_PROGRESS = [15, 30, 55, 75, 90];
+
+let stepInterval = null;
+let currentScanStep = 0;
+
+function advanceScanStep() {
+  if (currentScanStep > 0) {
+    const prev = document.getElementById(SCAN_STEPS[currentScanStep - 1]);
+    prev.className = 'scan-step-item done';
+    prev.innerHTML = `<span class="scan-step-icon" style="color:#5fffaa">✓</span> ${STEP_LABELS[currentScanStep-1][0]}`;
+  }
+  if (currentScanStep < SCAN_STEPS.length) {
+    const curr = document.getElementById(SCAN_STEPS[currentScanStep]);
+    curr.className = 'scan-step-item active';
+    curr.innerHTML = `<span class="scan-step-icon"><span class="spinner"></span></span> ${STEP_LABELS[currentScanStep][0]}`;
+    document.getElementById('progress-fill').style.width = STEP_PROGRESS[currentScanStep] + '%';
+    currentScanStep++;
+  }
+}
+
+function startStepAnimation() {
+  currentScanStep = 0;
+  SCAN_STEPS.forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = 'scan-step-item inactive';
+    el.innerHTML = `<span class="scan-step-icon">·</span> ${STEP_LABELS[i][0]}`;
+  });
+  document.getElementById('progress-fill').style.width = '0%';
+  advanceScanStep();
+  stepInterval = setInterval(() => {
+    if (currentScanStep < SCAN_STEPS.length) advanceScanStep();
+    else clearInterval(stepInterval);
+  }, 900);
+}
+
+function stopStepAnimation() {
+  clearInterval(stepInterval);
+  SCAN_STEPS.forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = 'scan-step-item done';
+    el.innerHTML = `<span class="scan-step-icon" style="color:#5fffaa">✓</span> ${STEP_LABELS[i][0]}`;
+  });
+  document.getElementById('progress-fill').style.width = '100%';
+}
+
+// ── SHOW / HIDE ──────────────────────────────────────────────────
+function showError(msg) {
+  const el = document.getElementById('error-msg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('error-msg').style.display = 'none';
+}
+
+// ── START SCAN ───────────────────────────────────────────────────
+async function startScan() {
+  const domain = document.getElementById('domain-input').value.trim();
+  if (!domain) { showError('Please enter a domain or subdomain.'); return; }
+  hideError();
+
+  // UI → scanning state
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('domain-input').disabled = true;
+  document.getElementById('scanning-state').style.display = 'block';
+  document.getElementById('results-state').style.display = 'none';
+  setStep(2);
+  startStepAnimation();
+
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      stopStepAnimation();
+      document.getElementById('scanning-state').style.display = 'none';
+      document.getElementById('scan-btn').disabled = false;
+      document.getElementById('domain-input').disabled = false;
+      setStep(1);
+      showError(data.error || 'Scan failed. Please try again.');
+      return;
+    }
+
+    stopStepAnimation();
+    scanResult = data;
+    showResults(data);
+
+  } catch (e) {
+    stopStepAnimation();
+    document.getElementById('scanning-state').style.display = 'none';
+    document.getElementById('scan-btn').disabled = false;
+    document.getElementById('domain-input').disabled = false;
+    setStep(1);
+    showError('Could not reach the scanner. Please try again.');
+  }
+}
+
+// ── CONTEXTUAL MESSAGE ──────────────────────────────────────────
+function showContextMessage(data) {
+  const el    = document.getElementById('context-msg');
+  const icon  = document.getElementById('msg-icon');
+  const main  = document.getElementById('msg-main');
+  const cta   = document.getElementById('msg-cta');
+
+  if (data.waf_detected) {
+    el.className = 'context-msg protected';
+    icon.textContent = '✅';
+    main.innerHTML = `Good news — <strong>${data.waf_vendor}</strong> is protecting your domain. However, a WAF alone doesn't guarantee full coverage. Misconfigurations, unprotected subdomains, and gaps in your attack surface could still leave you exposed.`;
+    cta.textContent = 'Leave your details below and our security experts will walk you through exactly where your gaps are and how to close them.';
+  } else {
+    el.className = 'context-msg unprotected';
+    icon.textContent = '⚠️';
+    main.innerHTML = 'Your domain has <strong>no WAF protection</strong>. Without it, your web assets are directly exposed to SQL injection, XSS, DDoS, and other common attacks. This is a critical gap that needs to be addressed immediately.';
+    cta.textContent = 'Leave your details below and our security experts will help you choose the right protection and get it in place fast.';
+  }
+
+  el.style.display = 'block';
+}
+
+// ── SHOW RESULTS ─────────────────────────────────────────────────
+function showResults(data) {
+  setStep(3);
+
+  // Domain label
+  document.getElementById('results-domain').textContent = data.domain;
+
+  // WAF badge
+  const badge = document.getElementById('waf-status-badge');
+  if (data.waf_detected) {
+    badge.innerHTML = `<div class="status-dot protected"></div><span class="badge-protected">WAF DETECTED</span>`;
+  } else {
+    badge.innerHTML = `<div class="status-dot unprotected"></div><span class="badge-unprotected">NO WAF FOUND</span>`;
+  }
+
+  // Status row
+  const statusEl = document.getElementById('res-status');
+  if (data.waf_detected) {
+    statusEl.innerHTML = `<span class="val-green">● PROTECTED</span>`;
+  } else {
+    statusEl.innerHTML = `<span class="val-red">● UNPROTECTED</span>`;
+  }
+
+  // Vendor row
+  const vendorRow = document.getElementById('res-vendor-row');
+  if (data.waf_detected && data.waf_vendor) {
+    document.getElementById('res-vendor').textContent = data.waf_vendor;
+    vendorRow.style.display = 'flex';
+  } else {
+    vendorRow.style.display = 'none';
+  }
+
+  // Scan time
+  document.getElementById('res-time').textContent = data.scan_time + 's';
+
+  // Confidence
+  const confSection = document.getElementById('conf-section');
+  if (data.waf_detected) {
+    document.getElementById('conf-value').textContent = `${data.confidence}% — ${data.confidence_label}`;
+    setTimeout(() => {
+      document.getElementById('conf-fill').style.width = data.confidence + '%';
+    }, 100);
+    confSection.style.display = 'block';
+  } else {
+    confSection.style.display = 'none';
+  }
+
+  // Signal tags
+  const wrap = document.getElementById('signals-wrap');
+  wrap.innerHTML = '';
+  if (data.signals && data.signals.length) {
+    data.signals.forEach(s => {
+      const tag = document.createElement('span');
+      tag.className = 'signal-tag';
+      tag.textContent = '✓ ' + s;
+      wrap.appendChild(tag);
+    });
+  }
+
+  // Show results + scan-again
+  document.getElementById('scanning-state').style.display = 'none';
+  document.getElementById('results-state').style.display = 'block';
+  document.getElementById('scan-again-btn').style.display = 'block';
+  document.getElementById('input-state').style.display = 'none';
+
+  showContextMessage(data);
+
+  // Show lead card after short delay
+  setTimeout(() => {
+    document.getElementById('lead-card').style.display = 'block';
+    document.getElementById('lead-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 800);
+}
+
+// ── RESET ────────────────────────────────────────────────────────
+function resetScan() {
+  setStep(1);
+  document.getElementById('input-state').style.display = 'block';
+  document.getElementById('scanning-state').style.display = 'none';
+  document.getElementById('results-state').style.display = 'none';
+  document.getElementById('scan-again-btn').style.display = 'none';
+  document.getElementById('lead-card').style.display = 'none';
+  document.getElementById('context-msg').style.display = 'none';
+  document.getElementById('domain-input').value = '';
+  document.getElementById('domain-input').disabled = false;
+  document.getElementById('scan-btn').disabled = false;
+  document.getElementById('domain-input').focus();
+  hideError();
+}
+
+// ── LEAD SUBMIT ──────────────────────────────────────────────────
+async function submitLead() {
+  const name    = document.getElementById('lead-name').value.trim();
+  const email   = document.getElementById('lead-email').value.trim();
+  const company = document.getElementById('lead-company').value.trim();
+  const phone   = document.getElementById('lead-phone').value.trim();
+
+  if (!name || !email) {
+    alert('Please enter your name and email.');
+    return;
+  }
+
+  try {
+    await fetch('/api/lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, company, phone, domain: scanResult?.domain, waf: scanResult?.waf_vendor })
+    });
+  } catch (e) { /* silent */ }
+
+  document.getElementById('lead-form-content').style.display = 'none';
+  document.getElementById('lead-success').style.display = 'block';
+}
+
+// ── ENTER KEY ────────────────────────────────────────────────────
+document.getElementById('domain-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startScan();
+});
+
+// ── AUTH ─────────────────────────────────────────────────────────
+let authToken = sessionStorage.getItem('waf_token') || null;
+
+async function submitPassword() {
+  const pwd = document.getElementById('password-input').value;
+  if (!pwd) return;
+
+  const btn = document.getElementById('btn-unlock');
+  btn.disabled = true;
+  btn.textContent = 'CHECKING...';
+  document.getElementById('password-error').style.display = 'none';
+
+  try {
+    const res  = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    });
+    const data = await res.json();
+
+    if (res.ok && data.token) {
+      authToken = data.token;
+      sessionStorage.setItem('waf_token', authToken);
+      document.getElementById('password-gate').style.display = 'none';
+    } else {
+      document.getElementById('password-error').style.display = 'block';
+      document.getElementById('password-input').value = '';
+      document.getElementById('password-input').focus();
+      btn.disabled = false;
+      btn.textContent = 'UNLOCK';
+    }
+  } catch (e) {
+    document.getElementById('password-error').textContent = 'Connection error. Please try again.';
+    document.getElementById('password-error').style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'UNLOCK';
+  }
+}
+
+// Check on load — if token exists in session, skip gate
+window.addEventListener('DOMContentLoaded', () => {
+  if (authToken) {
+    document.getElementById('password-gate').style.display = 'none';
+  }
+  document.getElementById('password-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitPassword();
+  });
+});
+
+// Attach token to all API calls
+const _origFetch = window.fetch;
+window.fetch = function(url, opts = {}) {
+  if (typeof url === 'string' && url.startsWith('/api/') && url !== '/api/auth') {
+    opts.headers = opts.headers || {};
+    if (authToken) opts.headers['X-Auth-Token'] = authToken;
+  }
+  return _origFetch(url, opts);
+};
+
+
+</script>
+</body>
+</html>
