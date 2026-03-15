@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""
+WAF Detector - Flask Backend
+Password is read from APP_PASSWORD environment variable — never stored in code.
+"""
+
+import time
+import random
+import os
+import secrets
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+
+try:
+    import requests as req
+    req.packages.urllib3.disable_warnings()
+except ImportError:
+    pass
+
+app = Flask(__name__, static_folder="static")
+CORS(app)
+
+# ─────────────────────────────────────────────────────────────────
+# AUTH — password lives in Railway env var, never in code
+# ─────────────────────────────────────────────────────────────────
+
+VALID_TOKENS = {}        # {token: expiry_timestamp}
+TOKEN_TTL    = 8 * 3600  # 8 hours
+
+
+def get_app_password():
+    pwd = os.environ.get("APP_PASSWORD", "")
+    if not pwd:
+        print("[WARN] APP_PASSWORD environment variable is not set!")
+    return pwd
+
+
+def issue_token():
+    token = secrets.token_hex(32)
+    VALID_TOKENS[token] = time.time() + TOKEN_TTL
+    return token
+
+
+def is_valid_token(token):
+    if not token or token not in VALID_TOKENS:
+        return False
+    if time.time() > VALID_TOKENS[token]:
+        del VALID_TOKENS[token]
+        return False
+    return True
+
+
+def check_auth(req_obj):
+    return is_valid_token(req_obj.headers.get("X-Auth-Token", ""))
+
+
+# ─────────────────────────────────────────────────────────────────
+# WAF SIGNATURES
+# ─────────────────────────────────────────────────────────────────
+
+WAF_SIGNATURES = {
+    "Cloudflare": {
+        "headers":          ["cf-ray", "cf-cache-status", "cf-request-id", "cf-edge-cache"],
+        "cookies":          ["__cfduid", "__cf_bm", "cf_clearance"],
+        "server_values":    ["cloudflare"],
+        "body_keywords":    ["cloudflare", "attention required", "cf-error-details", "ray id"],
+        "block_indicators": ["cloudflare ray id", "error 1010", "error 1012", "error 1020"],
+    },
+    "Imperva (Incapsula)": {
+        "headers":          ["x-iinfo", "x-cdn"],
+        "cookies":          ["visid_incap_", "incap_ses_", "nlbi_"],
+        "server_values":    ["incapsula"],
+        "body_keywords":    ["incapsula", "imperva", "request unsuccessful"],
+        "block_indicators": ["incapsula incident id", "request blocked by incapsula"],
+    },
+    "Akamai": {
+        "headers":          ["x-akamai-transformed", "akamai-origin-hop", "x-akamai-request-id"],
+        "cookies":          ["ak_bmsc", "bm_sz", "bm_sv"],
+        "server_values":    ["akamaighost", "akamai"],
+        "body_keywords":    ["akamai", "reference #"],
+        "block_indicators": ["akamai technologies", "you don't have permission"],
+    },
+    "Sucuri": {
+        "headers":          ["x-sucuri-id", "x-sucuri-cache", "x-sucuri-block"],
+        "cookies":          ["sucuri_cloudproxy_uuid"],
+        "server_values":    ["sucuri/cloudproxy"],
+        "body_keywords":    ["sucuri", "cloudproxy", "website firewall"],
+        "block_indicators": ["sucuri website firewall", "access denied - sucuri"],
+    },
+    "AWS WAF": {
+        "headers":          ["x-amzn-requestid", "x-amz-cf-id", "x-amz-cf-pop"],
+        "cookies":          ["aws-waf-token"],
+        "server_values":    ["awselb", "amazon"],
+        "body_keywords":    ["aws waf", "request blocked"],
+        "block_indicators": ["aws waf could not forward"],
+    },
+    "F5 BIG-IP": {
+        "headers":          ["x-wa-info", "x-cnection"],
+        "cookies":          ["bigipserver", "f5_cspm"],
+        "server_values":    ["big-ip", "f5"],
+        "body_keywords":    ["f5 networks", "the requested url was rejected"],
+        "block_indicators": ["the requested url was rejected"],
+    },
+    "Barracuda": {
+        "headers":          ["x-barracuda-connect", "x-barracuda-start-time"],
+        "cookies":          ["barra_counter_session", "BNI__BARRACUDA_LB_COOKIE"],
+        "server_values":    ["barracuda"],
+        "body_keywords":    ["barracuda networks", "you have been blocked"],
+        "block_indicators": ["barracuda web application firewall"],
+    },
+    "Fortinet FortiWeb": {
+        "headers":          ["x-requestid"],
+        "cookies":          ["FORTIWAFSID"],
+        "server_values":    ["fortiweb", "fortigate"],
+        "body_keywords":    ["fortigate", "fortiweb", "url block"],
+        "block_indicators": ["fortigate application control"],
+    },
+    "ModSecurity": {
+        "headers":          ["x-mod-security", "x-modsec"],
+        "cookies":          [],
+        "server_values":    ["mod_security", "modsecurity"],
+        "body_keywords":    ["mod_security", "modsecurity", "not acceptable"],
+        "block_indicators": ["406 not acceptable", "mod_security"],
+    },
+    "Wordfence": {
+        "headers":          [],
+        "cookies":          ["wfvt_", "wordfence_verifiedHuman"],
+        "server_values":    [],
+        "body_keywords":    ["wordfence", "generated by wordfence"],
+        "block_indicators": ["generated by wordfence", "wordfence security"],
+    },
+}
+
+MALICIOUS_PAYLOADS = [
+    "/?q=<script>alert(1)</script>",
+    "/?id=1' OR '1'='1",
+    "/?file=../../../../etc/passwd",
+    "/?cmd=;ls -la",
+]
+
+SCAN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    "Connection": "close",
+}
+
+# ─────────────────────────────────────────────────────────────────
+# DETECTION HELPERS
+# ─────────────────────────────────────────────────────────────────
+
+def normalize(domain):
+    domain = domain.strip()
+    if not domain.startswith(("http://", "https://")):
+        domain = "https://" + domain
+    return domain.rstrip("/")
+
+
+def fetch(url, timeout=10):
+    try:
+        return req.get(url, headers=SCAN_HEADERS, timeout=timeout, verify=False, allow_redirects=True)
+    except Exception:
+        try:
+            return req.get(url.replace("https://", "http://"), headers=SCAN_HEADERS, timeout=timeout, verify=False)
+        except Exception:
+            return None
+
+
+def detect_headers(resp_headers):
+    signals = []
+    h = {k.lower(): v.lower() for k, v in resp_headers.items()}
+    for waf, sigs in WAF_SIGNATURES.items():
+        for key in sigs["headers"]:
+            if key.lower() in h:
+                signals.append(("Header Detection", waf, 3, f"{key}: {h[key.lower()][:80]}"))
+        for sv in sigs["server_values"]:
+            if sv.lower() in h.get("server", ""):
+                signals.append(("Header Detection", waf, 3, f"Server: {h.get('server','')}"))
+    for g in ["x-protected-by", "x-firewall", "x-waf", "x-security", "x-ddos-protection"]:
+        if g in h:
+            signals.append(("Header Detection", "Unknown WAF", 1, f"{g}: {h[g][:80]}"))
+    return signals
+
+
+def detect_cookies(resp_headers):
+    signals = []
+    cookies = resp_headers.get("set-cookie", "") + resp_headers.get("Set-Cookie", "")
+    cl = cookies.lower()
+    for waf, sigs in WAF_SIGNATURES.items():
+        for c in sigs["cookies"]:
+            if c.lower() in cl:
+                signals.append(("Cookie Fingerprint", waf, 3, f"Cookie: {c}"))
+    return signals
+
+
+def detect_response_codes(base_url):
+    signals = []
+    normal = fetch(base_url + "/")
+    if not normal:
+        return signals
+    normal_code = normal.status_code
+    for payload in MALICIOUS_PAYLOADS:
+        time.sleep(random.uniform(0.1, 0.3))
+        r = fetch(base_url + payload)
+        if r is None:
+            signals.append(("Response Code Analysis", "Unknown WAF", 2, "Connection reset on payload"))
+        elif r.status_code in (403, 406, 429, 503) and r.status_code != normal_code:
+            signals.append(("Response Code Analysis", "Unknown WAF", 2, f"HTTP {r.status_code} returned for malicious payload"))
+    return signals
+
+
+def detect_block_page(base_url):
+    signals = []
+    r = fetch(base_url + MALICIOUS_PAYLOADS[0])
+    if not r:
+        return signals
+    body = r.text.lower()
+    for waf, sigs in WAF_SIGNATURES.items():
+        for kw in sigs["body_keywords"]:
+            if kw.lower() in body:
+                signals.append(("Block Page Content", waf, 2, f"Body keyword: '{kw}'"))
+                break
+        for bi in sigs["block_indicators"]:
+            if bi.lower() in body:
+                signals.append(("Block Page Content", waf, 3, f"Block indicator: '{bi}'"))
+    return signals
+
+
+def detect_timing(base_url):
+    signals = []
+    times_normal, times_bad = [], []
+    for _ in range(2):
+        t = time.time(); fetch(base_url + "/"); times_normal.append(time.time() - t); time.sleep(0.2)
+    for p in MALICIOUS_PAYLOADS[:2]:
+        t = time.time(); fetch(base_url + p); times_bad.append(time.time() - t); time.sleep(0.2)
+    if times_normal and times_bad:
+        diff = (sum(times_bad) / len(times_bad)) - (sum(times_normal) / len(times_normal))
+        if abs(diff) > 1.0:
+            avg_n = sum(times_normal) / len(times_normal)
+            avg_m = sum(times_bad) / len(times_bad)
+            signals.append(("Timing Analysis", "Unknown WAF", 1,
+                            f"Response delta: {diff:+.2f}s (normal {avg_n:.2f}s vs malicious {avg_m:.2f}s)"))
+    return signals
+
+
+def confidence(signal_count):
+    if signal_count == 0:   return 0,  "No WAF Detected"
+    elif signal_count == 1: return 50, "Medium"
+    elif signal_count == 2: return 75, "High"
+    else:                   return 95, "Very High"
+
+
+def top_waf(signals):
+    votes = {}
+    for _, waf, weight, _ in signals:
+        if waf != "Unknown WAF":
+            votes[waf] = votes.get(waf, 0) + weight
+    return max(votes, key=votes.get) if votes else ("Unknown WAF" if signals else "None")
+
+
+# ─────────────────────────────────────────────────────────────────
+# ROUTES
+# ─────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return send_from_directory("static", "index.html")
+
+
+@app.route("/api/auth", methods=["POST"])
+def auth():
+    """Validate password, return a session token. Password never touches the frontend."""
+    data     = request.get_json()
+    password = (data or {}).get("password", "")
+    app_pwd  = get_app_password()
+
+    if not app_pwd:
+        return jsonify({"error": "Server not configured"}), 500
+
+    if secrets.compare_digest(password, app_pwd):
+        token = issue_token()
+        print(f"[AUTH] Successful login from {request.remote_addr}")
+        return jsonify({"ok": True, "token": token})
+    else:
+        print(f"[AUTH] Failed attempt from {request.remote_addr}")
+        return jsonify({"error": "Incorrect password"}), 401
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan():
+    if not check_auth(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data         = request.get_json()
+    domain       = (data or {}).get("domain", "").strip()
+
+    if not domain:
+        return jsonify({"error": "No domain provided"}), 400
+
+    domain_clean = domain.replace("https://", "").replace("http://", "").split("/")[0]
+    if not domain_clean or "." not in domain_clean:
+        return jsonify({"error": "Invalid domain format"}), 400
+
+    base       = normalize(domain_clean)
+    start_time = time.time()
+
+    r = fetch(base)
+    if r is None:
+        return jsonify({"error": f"Could not reach {domain_clean}. Please check the domain and try again."}), 400
+
+    all_signals = []
+    all_signals += detect_headers(dict(r.headers))
+    all_signals += detect_cookies(dict(r.headers))
+    all_signals += detect_response_codes(base)
+    all_signals += detect_block_page(base)
+    all_signals += detect_timing(base)
+
+    seen, unique = set(), []
+    for s in all_signals:
+        key = (s[0], s[1])
+        if key not in seen:
+            seen.add(key)
+            unique.append(s)
+
+    signal_count   = len(set(m for m, _, _, _ in unique))
+    score, level   = confidence(signal_count)
+    vendor         = top_waf(unique)
+    methods        = sorted(set(m for m, _, _, _ in unique))
+    scan_time      = round(time.time() - start_time, 1)
+    signal_details = [{"method": m, "waf": w, "detail": d} for m, w, _, d in unique]
+
+    return jsonify({
+        "domain":           domain_clean,
+        "waf_detected":     score > 0,
+        "waf_vendor":       vendor if score > 0 else None,
+        "confidence":       score,
+        "confidence_label": level,
+        "signals":          methods,
+        "signal_details":   signal_details,
+        "scan_time":        scan_time,
+    })
+
+
+@app.route("/api/lead", methods=["POST"])
+def lead():
+    if not check_auth(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json()
+    print(f"[LEAD] {data}")
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
